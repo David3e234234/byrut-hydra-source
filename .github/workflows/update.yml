@@ -34,35 +34,39 @@ jobs:
         with:
           node-version: 20
 
-      - name: Scrape (scheduled = news + all batch; manual = выбор)
+      - name: Scrape (scheduled = news + all batch + check-updates; manual = выбор)
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
             # 1) свежие раздачи — быстро (заодно проверяет обновления у
             #    игр с этих страниц: отпечаток размер|дата|название)
             node scrape.mjs --pages 5
+            bash publish.sh "chore: scrape news pages [skip ci]"
             # 2) порция каталога: до 4000 НОВЫХ игр за запуск (~2.5ч),
             #    кэшированные пропускаются мгновенно, лимит не тратится
             node scrape.mjs --all --limit 4000
+            bash publish.sh "chore: scrape catalog batch [skip ci]"
             # 3) проверка обновлений у кэшированных игр: если на сайте у игры
             #    изменился размер/дата/версия — magnet перекачивается.
             #    1500 игр за запуск ≈ полный круг по каталогу раз в ~5 недель
             node scrape.mjs --check-updates --updates-limit 1500 --refresh
+            bash publish.sh "chore: check-updates sweep [skip ci]"
           else
             case "${{ inputs.mode }}" in
-              news)          node scrape.mjs --pages 5 ;;
-              all)           node scrape.mjs --all --limit 4000 ;;
-              check-updates) node scrape.mjs --check-updates --updates-limit 4000 --refresh ;;
+              news)
+                node scrape.mjs --pages 5
+                bash publish.sh "chore: scrape news pages [skip ci]" ;;
+              all)
+                node scrape.mjs --all --limit 4000
+                bash publish.sh "chore: scrape catalog batch [skip ci]" ;;
+              check-updates)
+                node scrape.mjs --check-updates --updates-limit 4000 --refresh
+                bash publish.sh "chore: check-updates sweep [skip ci]" ;;
             esac
           fi
+        # publish.sh внутри делает финальный коммит+push после каждой фазы,
+        # поэтому шаг «Commit if changed» больше не нужен: данные сохраняются
+        # порциями и не теряются даже если job упадёт посередине.
 
-      - name: Commit if changed
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add byrut.json .cache/downloads.json
-          if git diff --cached --quiet; then
-            echo "No changes"
-          else
-            git commit -m "chore: update byrut.json ($(date -u +%Y-%m-%d))"
-            git push
-          fi
+      - name: Summary
+        if: always()
+        run: echo "Done. See commits on main."
