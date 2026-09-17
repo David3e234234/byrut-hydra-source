@@ -16,8 +16,9 @@
  *   node scrape.mjs                 # инкрементально: сначала кэш, потом новости
  *   node scrape.mjs --full          # полное обновление: перечитать все страницы новостей
  *   node scrape.mjs --pages 5       # прочитать только 5 страниц новостей
- *   node scrape.mjs --all           # ВЕСЬ сайт через sitemap (~55к игр; несколько дней работы!)
- *   node scrape.mjs --all --limit 500  # первые 500 игр из sitemap (для теста/дозаливки)
+ *   node scrape.mjs --all           # ВЕСЬ сайт через sitemap (может занять дни за один прогон)
+ *   node scrape.mjs --all --limit 500  # до 500 НОВЫХ игр за запуск (кэшированные не считаются);
+ *                                      # удобно для порционного заполнения через cron/Actions
  */
 
 import { writeFile, readFile, mkdir, stat } from "node:fs/promises";
@@ -323,25 +324,39 @@ async function main() {
 
   if (ALL) {
     // ===== Режим --all: весь сайт через sitemap =====
+    // Стратегия «сначала новые»: кэшированные пропускаются мгновенно,
+    // поэтому за каждый запуск успеваем обработать BATCH игр из начала очереди.
     const gameUrls = await loadSitemapGameUrls();
-    const queue = ALL_LIMIT > 0 ? gameUrls.slice(0, ALL_LIMIT) : gameUrls;
-    console.log(`Режим --all: игр в очереди: ${queue.length}`);
+    const uncachedCount = gameUrls.filter((u) => !cache[u]?.uris?.length || FULL).length;
+    const batch = ALL_LIMIT > 0 ? Math.min(ALL_LIMIT, gameUrls.length) : gameUrls.length;
+    console.log(`Режим --all: игр в sitemap: ${gameUrls.length}, без кэша: ${uncachedCount}, лимит за запуск: ${batch}`);
     console.log(
-      `Оценка времени: ~${Math.ceil((queue.length * (PAGE_DELAY_MS + TORRENT_DELAY_MS)) / 3600000)} ч (новых); кэшированные проходят мгновенно.\n`
+      `Оценка времени на новые игры: ~${Math.ceil((Math.min(batch, uncachedCount) * (PAGE_DELAY_MS + TORRENT_DELAY_MS)) / 3600000)} ч\n`
     );
     let done = 0;
-    for (const link of queue) {
+    let processed = 0;
+    for (const link of gameUrls) {
+      // Ограничиваем работу за запуск: считаем только реально обработанные,
+      // кэшированные пропускаем бесплатно и не тратим лимит
+      if (ALL_LIMIT > 0 && processed >= ALL_LIMIT) {
+        console.log(`[--all] лимит ${ALL_LIMIT} новых игр за запуск достигнут, останавливаемся`);
+        break;
+      }
       done++;
       if (done % 50 === 0) {
-        console.log(`[--all] прогресс: ${done}/${queue.length}`);
+        console.log(`[--all] прогресс: ${done}/${gameUrls.length} (новых: ${newTorrents})`);
         // Периодически сохраняем кэш, чтобы прогресс не терялся при падении
         await mkdir(CACHE_DIR, { recursive: true });
         await writeFile(CACHE_FILE, JSON.stringify(cache, null, 2), "utf-8");
       }
       try {
         const isNew = await processGamePage(link, cache, entries);
-        if (isNew) newTorrents++;
-        else skippedByCache++;
+        if (isNew) {
+          newTorrents++;
+          processed++;
+        } else {
+          skippedByCache++;
+        }
       } catch (e) {
         console.warn(`  ${link}: ${e.message}`);
       }
