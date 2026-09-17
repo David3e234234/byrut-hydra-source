@@ -14,7 +14,7 @@ on:
         options:
           - all
           - news
-          - full
+          - check-updates
 
 permissions:
   contents: write
@@ -37,16 +37,21 @@ jobs:
       - name: Scrape (scheduled = news + all batch; manual = выбор)
         run: |
           if [ "${{ github.event_name }}" = "schedule" ]; then
-            # 1) свежие раздачи — быстро
+            # 1) свежие раздачи — быстро (заодно проверяет обновления у
+            #    игр с этих страниц: отпечаток размер|дата|название)
             node scrape.mjs --pages 5
             # 2) порция каталога: до 4000 НОВЫХ игр за запуск (~2.5ч),
             #    кэшированные пропускаются мгновенно, лимит не тратится
             node scrape.mjs --all --limit 4000
+            # 3) проверка обновлений у кэшированных игр: если на сайте у игры
+            #    изменился размер/дата/версия — magnet перекачивается.
+            #    1500 игр за запуск ≈ полный круг по каталогу раз в ~5 недель
+            node scrape.mjs --check-updates --updates-limit 1500 --refresh
           else
             case "${{ inputs.mode }}" in
-              news) node scrape.mjs --pages 5 ;;
-              full) node scrape.mjs --full --pages 5 ;;
-              all)  node scrape.mjs --all --limit 4000 ;;
+              news)          node scrape.mjs --pages 5 ;;
+              all)           node scrape.mjs --all --limit 4000 ;;
+              check-updates) node scrape.mjs --check-updates --updates-limit 4000 --refresh ;;
             esac
           fi
 

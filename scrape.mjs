@@ -19,6 +19,11 @@
  *   node scrape.mjs --all           # ВЕСЬ сайт через sitemap (может занять дни за один прогон)
  *   node scrape.mjs --all --limit 500  # до 500 НОВЫХ игр за запуск (кэшированные не считаются);
  *                                      # удобно для порционного заполнения через cron/Actions
+ *
+ * Обнаружение обновлений: у каждой игры в кэше хранится короткий отпечаток
+ * (размер + дата обновления на странице). Если отпечаток изменился — игра
+ * обновилась на сайте, magnet перекачивается автоматически. Режим --full
+ * больше не нужен: и news, и all проверяют обновления сами.
  */
 
 import { writeFile, readFile, mkdir, stat } from "node:fs/promises";
@@ -42,8 +47,12 @@ const MAX_TORRENT_RETRIES = 2;
 const args = process.argv.slice(2);
 const FULL = args.includes("--full");
 const ALL = args.includes("--all");
+const CHECK_UPDATES = args.includes("--check-updates");
 const limitArgIdx = args.indexOf("--limit");
 const ALL_LIMIT = limitArgIdx !== -1 ? parseInt(args[limitArgIdx + 1], 10) || 0 : 0;
+const updArgIdx = args.indexOf("--updates-limit");
+const UPDATE_LIMIT = updArgIdx !== -1 ? parseInt(args[updArgIdx + 1], 10) || 0 : 0;
+const REFRESH = args.includes("--refresh");
 const pagesArgIdx = args.indexOf("--pages");
 const MAX_PAGES = pagesArgIdx !== -1 ? parseInt(args[pagesArgIdx + 1], 10) || 3 : 3;
 
@@ -169,7 +178,14 @@ function extractSize(html) {
   const m =
     html.match(/data-size="([^"]+)"/i) ||
     html.match(/(\d+(?:[.,]\d+)?\s*(?:МБ|ГБ|КБ|MB|GB|KB))/i);
-  return m ? m[1].replace(",", ".") : null;
+  if (!m) return null;
+  // Нормализуем кириллические юниты к латинице, чтобы отпечаток был стабильным
+  return m[1]
+    .replace(",", ".")
+    .replace(/\u0413\u0411/g, "GB") // ГБ -> GB
+    .replace(/\u041c\u0411/g, "MB") // МБ -> MB
+    .replace(/\u041a\u0411/g, "KB") // КБ -> KB
+    .trim();
 }
 
 /** Дата публикации/обновления из страницы ("10 сен. 2026", "1 апреля 2021") */
@@ -248,11 +264,17 @@ async function loadSitemapGameUrls() {
 
 /** Обработать одну страницу игры: скачал -> infohash -> magnet -> в кэш. Возвращает true если новая. */
 async function processGamePage(link, cache, entries) {
-  if (cache[link]?.uris?.length && !FULL) {
+  const alreadyHave = Boolean(cache[link]?.uris?.length);
+
+  // В режиме --all кэшированные игры пропускаем мгновенно: их целостность
+  // (актуальность magnet) проверяет отдельный цикл --check-updates.
+  if (alreadyHave && ALL && !FULL) {
     entries.set(link, cache[link]);
     return false; // уже есть
   }
 
+  // Обычный/news-режим: страницу всё равно читаем — она свежая; для кэшированной
+  // игры это заодно проверка обновления (отпечаток ниже).
   await sleep(PAGE_DELAY_MS);
   let gameHtml;
   try {
@@ -265,15 +287,31 @@ async function processGamePage(link, cache, entries) {
   const title = extractTitle(gameHtml);
   if (!title) return false;
 
-  // Если игра уже в кэше, но страница загрузилась — обновим дату/размер, magnet не трогаем
-  const cached = cache[link];
-  const uploadDate = extractDate(gameHtml) || cached?.uploadDate || "";
-  const fileSize = extractSize(gameHtml) || cached?.fileSize || "";
+  const uploadDate = extractDate(gameHtml) || cache[link]?.uploadDate || "";
+  const fileSize = extractSize(gameHtml) || cache[link]?.fileSize || "";
 
+  const cached = cache[link];
+
+  // ===== Проверка обновления у уже известной игры =====
   if (cached?.uris?.length) {
-    entries.set(link, { ...cached, title, uploadDate, fileSize });
-    cache[link] = entries.get(link);
-    return false;
+    const fingerprint = `${fileSize}|${uploadDate}|${title}`;
+    const cachedFingerprint = `${cached.fileSize}|${cached.uploadDate}|${cached.title}`;
+    if (fingerprint === cachedFingerprint) {
+      // Ничего не изменилось
+      entries.set(link, { ...cached, title, uploadDate, fileSize });
+      return false;
+    }
+
+    if (!REFRESH) {
+      // Изменение заметили, но перекачивать не разрешено — просто фиксируем метаданные
+      entries.set(link, { ...cached, title, uploadDate, fileSize });
+      cache[link] = entries.get(link);
+      return false;
+    }
+
+    console.log(`  ~ ${title}: обновление на сайте (${cached.fileSize} -> ${fileSize}), перекачиваем torrent...`);
+    updatedTorrents++;
+    // дальше — общий путь: скачиваем .torrent и перезаписываем magnet
   }
 
   const torrentUrl = extractTorrentLink(gameHtml, link);
@@ -307,9 +345,15 @@ async function processGamePage(link, cache, entries) {
   };
   entries.set(link, entry);
   cache[link] = entry;
-  console.log(`  + ${title} [${infohash}]`);
-  return true;
+  if (updatedTorrents > 0 && cached?.uris?.length) {
+    console.log(`  ~ ${title}: magnet обновлён [${infohash}]`);
+  } else {
+    console.log(`  + ${title} [${infohash}]`);
+  }
+  return !cached?.uris?.length; // новая = true, обновление = false
 }
+
+let updatedTorrents = 0; // счётчик обновлённых magnet'ов (растёт при перекачке)
 
 async function main() {
   const cache = await loadCache(); // { pageUrl: { title, uris, uploadDate, fileSize } }
@@ -361,8 +405,10 @@ async function main() {
         console.warn(`  ${link}: ${e.message}`);
       }
     }
-  } else {
+  }
+
   // ===== Обычный режим: страницы новостей =====
+  if (!ALL) {
   for (let page = 1; page <= MAX_PAGES; page++) {
     const pageUrl = page === 1 ? BASE + "/" : `${BASE}/page/${page}/`;
     console.log(`[page ${page}] ${pageUrl}`);
@@ -380,7 +426,7 @@ async function main() {
     console.log(`  найдено игр: ${gameLinks.length}`);
 
     for (const link of gameLinks) {
-      if (!FULL && cache[link]) {
+      if (!FULL && cache[link]?.uris?.length) {
         // Уже есть в кэше — берём без повторного скачивания
         entries.set(link, cache[link]);
         skippedByCache++;
@@ -391,6 +437,36 @@ async function main() {
       if (isNew) newTorrents++;
     }
   }
+  } // end if (!ALL)
+
+  // ===== Проверка обновлений (--check-updates): читаем страницы у кэшированных
+  // игр, сравниваем отпечаток (размер|дата|название), при изменении перекачиваем
+  // torrent и обновляем magnet. Обрабатываем порцию в начале списка (от свежих к
+  // старым), чтобы лимит/таймаут не мешали регулярности проверки.
+  if (CHECK_UPDATES) {
+    const gameUrls = await loadSitemapGameUrls();
+    // только игры, которые уже в кэше
+    const cachedUrls = gameUrls.filter((u) => cache[u]?.uris?.length);
+    const slice = UPDATE_LIMIT > 0 ? cachedUrls.slice(0, UPDATE_LIMIT) : cachedUrls;
+    console.log(`\n[check-updates] игр в кэше: ${cachedUrls.length}, проверяем за запуск: ${slice.length}`);
+
+    let checked = 0;
+    let changed = 0;
+    for (const link of slice) {
+      checked++;
+      if (checked % 50 === 0) {
+        console.log(`[check-updates] прогресс: ${checked}/${slice.length} (обновлено: ${updatedTorrents})`);
+        await mkdir(CACHE_DIR, { recursive: true });
+        await writeFile(CACHE_FILE, JSON.stringify(cache, null, 2), "utf-8");
+      }
+      try {
+        await processGamePage(link, cache, entries);
+      } catch (e) {
+        console.warn(`  ${link}: ${e.message}`);
+      }
+    }
+    changed = updatedTorrents;
+    console.log(`[check-updates] проверено: ${checked}, обновлено: ${changed}`);
   }
 
   // Собираем итоговый JSON
