@@ -44,6 +44,13 @@ const PAGE_DELAY_MS = 1500; // пауза между страницами
 const TORRENT_DELAY_MS = 700; // пауза между скачиванием .torrent
 const MAX_TORRENT_RETRIES = 2;
 
+// Хостеры облаков, которые Hydra умеет качать напрямую (см. getDownloadersForUri
+// в исходниках Hydra: gofile, pixeldrain, datanodes, mediafire, fuckingfast,
+// vikingfile, rootz, archive.org + magnet). Всё остальное из блока
+// «Альтернативные раздачи» (Buzzheavier, MixDrop, Google Drive и пр.)
+// отфильтровываем: Hydra отбрасывает релиз целиком при неподдерживаемой ссылке.
+const SUPPORTED_CLOUD_HOSTS = ["pixeldrain.com", "gofile.io", "datanodes.to", "www.mediafire.com", "fuckingfast.co", "vikingfile.com", "www.rootz.so"];
+
 const args = process.argv.slice(2);
 const FULL = args.includes("--full");
 const ALL = args.includes("--all");
@@ -173,6 +180,56 @@ function extractTorrentLink(html, pageUrl) {
   return new URL(m[1], pageUrl).href;
 }
 
+/**
+ * Облачные ссылки из блока «Альтернативные раздачи» (файловое хранилище).
+ *
+ * На сайте блок data-ajax="features_storage" подгружается скриптом:
+ *   POST engine/ajax/controller.php?mod=ajaxsp  c  block=features_storage&id=<newsId>
+ * Ответ — HTML со ссылками вида <a link="https://...">Pixeldrain</a>
+ * (атрибут link, не href). Оставляем только хостеров из SUPPORTED_CLOUD_HOSTS.
+ */
+function extractNewsId(pageUrl, html) {
+  let m = html.match(/data-news-id="(\d+)"/i);
+  if (m) return m[1];
+  m = pageUrl.match(/\/(\d+)-[a-z0-9-]+\.html/i);
+  return m ? m[1] : null;
+}
+
+async function fetchStorageLinks(pageUrl, newsId) {
+  if (!newsId) return [];
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), 30000);
+  try {
+    const res = await fetch(`${BASE}/engine/ajax/controller.php?mod=ajaxsp`, {
+      method: "POST",
+      headers: {
+        "User-Agent": UA,
+        "Content-Type": "application/x-www-form-urlencoded",
+        Referer: pageUrl,
+      },
+      body: `block=features_storage&id=${newsId}`,
+      signal: controller.signal,
+      redirect: "follow",
+    });
+    if (!res.ok) return [];
+    const html = await res.text();
+    const links = [...html.matchAll(/<a[^>]+link="([^"]+)"[^>]*>/gi)].map((m) => m[1]);
+    const supported = [];
+    for (const url of links) {
+      try {
+        const host = new URL(url).hostname;
+        if (SUPPORTED_CLOUD_HOSTS.includes(host)) supported.push(url);
+        else console.log(`    [storage] пропуск неподдерживаемого Hydra хостера: ${host}`);
+      } catch { /* мусорная ссылка */ }
+    }
+    return supported;
+  } catch {
+    return [];
+  } finally {
+    clearTimeout(t);
+  }
+}
+
 /** Размер из data-size или текста страницы ("546 МБ", "12.5 ГБ") */
 function extractSize(html) {
   const m =
@@ -292,10 +349,24 @@ async function processGamePage(link, cache, entries) {
 
   const cached = cache[link];
 
+  // ===== Облачные ссылки «Альтернативных раздач» =====
+  // Файлохранилище есть не у всех игр — внешний AJAX-запрос делаем только если
+  // в разметке есть блок data-ajax="features_storage" (у остальных — 0 запросов,
+  // поведение и скорость для обычных торрентов не меняются).
+  let storageUris = [];
+  if (/data-ajax="features_storage"/i.test(gameHtml)) {
+    const newsId = extractNewsId(link, gameHtml);
+    storageUris = await fetchStorageLinks(link, newsId);
+  }
+
   // ===== Проверка обновления у уже известной игры =====
   if (cached?.uris?.length) {
-    const fingerprint = `${fileSize}|${uploadDate}|${title}`;
-    const cachedFingerprint = `${cached.fileSize}|${cached.uploadDate}|${cached.title}`;
+    // Совместимость со старым кэшем: пустой список облаков не меняет отпечаток
+    // (иначе после деплоя все старые игры были бы «обновлёнными»)
+    const storagePart = (storageUris.length || cached._storageUris?.length) ? storageUris.join(",") : "";
+    const fingerprint = `${fileSize}|${uploadDate}|${title}|${storagePart}`;
+    const cachedStoragePart = (storageUris.length || cached._storageUris?.length) ? (cached._storageUris || []).join(",") : "";
+    const cachedFingerprint = `${cached.fileSize}|${cached.uploadDate}|${cached.title}|${cachedStoragePart}`;
     if (fingerprint === cachedFingerprint) {
       // Ничего не изменилось
       entries.set(link, { ...cached, title, uploadDate, fileSize });
@@ -309,46 +380,52 @@ async function processGamePage(link, cache, entries) {
       return false;
     }
 
-    console.log(`  ~ ${title}: обновление на сайте (${cached.fileSize} -> ${fileSize}), перекачиваем torrent...`);
+    console.log(`  ~ ${title}: обновление на сайте (${cached.fileSize} -> ${fileSize}), перекачиваем ссылки...`);
     updatedTorrents++;
-    // дальше — общий путь: скачиваем .torrent и перезаписываем magnet
+    // дальше — общий путь: скачиваем .torrent и/или облако, перезаписываем uris
   }
+
+  const uris = [...storageUris];
 
   const torrentUrl = extractTorrentLink(gameHtml, link);
-  if (!torrentUrl) {
-    console.warn(`  ${title}: не найдена ссылка на .torrent (пропуск)`);
-    return false;
+  if (torrentUrl) {
+    await sleep(TORRENT_DELAY_MS);
+    let buf;
+    try {
+      buf = await downloadTorrent(torrentUrl);
+    } catch (e) {
+      buf = null;
+      console.warn(`  ${title}: .torrent не скачался (${e.message})`);
+    }
+    if (buf) {
+      const infohash = computeInfohash(buf);
+      if (!infohash) {
+        console.warn(`  ${title}: не удалось вычислить infohash`);
+      } else {
+        uris.push(`magnet:?xt=urn:btih:${infohash}&dn=${encodeURIComponent(title)}&tr=${encodeURIComponent("udp://opentor.org:2710")}&tr=${encodeURIComponent("udp://tracker.opentrackr.org:1337/announce")}&tr=${encodeURIComponent("udp://open.demonii.com:1337/announce")}&tr=${encodeURIComponent("udp://tracker.torrent.eu.org:451/announce")}&tr=${encodeURIComponent("udp://exodus.desync.com:6969/announce")}`);
+      }
+    }
   }
 
-  await sleep(TORRENT_DELAY_MS);
-  let buf;
-  try {
-    buf = await downloadTorrent(torrentUrl);
-  } catch (e) {
-    console.warn(`  ${title}: .torrent не скачался (${e.message})`);
+  if (!uris.length) {
+    console.warn(`  ${title}: не найдено ни торрента, ни поддерживаемых облаков (пропуск)`);
     return false;
   }
-  const infohash = computeInfohash(buf);
-  if (!infohash) {
-    console.warn(`  ${title}: не удалось вычислить infohash`);
-    return false;
-  }
-
-  const magnet = `magnet:?xt=urn:btih:${infohash}&dn=${encodeURIComponent(title)}&tr=${encodeURIComponent("udp://opentor.org:2710")}&tr=${encodeURIComponent("udp://tracker.opentrackr.org:1337/announce")}&tr=${encodeURIComponent("udp://open.demonii.com:1337/announce")}&tr=${encodeURIComponent("udp://tracker.torrent.eu.org:451/announce")}&tr=${encodeURIComponent("udp://exodus.desync.com:6969/announce")}`;
 
   const entry = {
     title,
-    uris: [magnet],
+    uris,
     uploadDate,
     fileSize,
-    _torrentUrl: torrentUrl, // внутреннее поле, удаляется перед записью
+    _torrentUrl: torrentUrl || null, // внутреннее поле, удаляется перед записью
+    _storageUris: storageUris, // внутреннее поле, удаляется перед записью
   };
   entries.set(link, entry);
   cache[link] = entry;
-  if (updatedTorrents > 0 && cached?.uris?.length) {
-    console.log(`  ~ ${title}: magnet обновлён [${infohash}]`);
+  if (cached?.uris?.length) {
+    console.log(`  ~ ${title}: ссылки обновлены (${uris.length} шт.)`);
   } else {
-    console.log(`  + ${title} [${infohash}]`);
+    console.log(`  + ${title} [${uris.length === 1 && uris[0].startsWith("magnet:") ? uris[0].slice(23, 63) : uris.join(" | ")}]`);
   }
   return !cached?.uris?.length; // новая = true, обновление = false
 }
@@ -469,9 +546,9 @@ async function main() {
     console.log(`[check-updates] проверено: ${checked}, обновлено: ${changed}`);
   }
 
-  // Собираем итоговый JSON
+  // Собираем итоговый JSON (внутренние поля кэша вычищаем)
   const downloads = [...entries.values()]
-    .map(({ _torrentUrl, ...rest }) => rest)
+    .map(({ _torrentUrl, _storageUris, ...rest }) => rest)
     .filter((d) => d.uris?.length)
     .sort((a, b) => (b.uploadDate || "").localeCompare(a.uploadDate || ""));
 
@@ -490,7 +567,13 @@ async function main() {
   console.log(`Записей в итоговом файле: ${downloads.length} -> ${OUT_FILE}`);
 }
 
-main().catch((e) => {
-  console.error(e);
-  process.exit(1);
-});
+// Запуск только при прямом вызове (не при импорте из тестов)
+const isMain = process.argv[1] && (import.meta.url === `file://${process.argv[1].replace(/\\/g, "/")}` || process.argv[1].endsWith("scrape.mjs"));
+if (isMain) {
+  main().catch((e) => {
+    console.error(e);
+    process.exit(1);
+  });
+}
+
+export { extractNewsId, fetchStorageLinks, extractTorrentLink, extractTitle, extractSize, extractDate, computeInfohash };
