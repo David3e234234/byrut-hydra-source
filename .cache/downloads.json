@@ -122869,5 +122869,45 @@
       "https://www.mediafire.com/file/1rkydrw8h48isbv/Indivisible.v42940a-DINOByTES.iso/file",
       "https://gofile.io/d/lYePXA"
     ]
+  },
+  "https://byrutgame.org/45951-bootstrap-island.html": {
+    "title": "Bootstrap Island",
+    "uris": [
+      "https://gofile.io/d/xBThk0Uu",
+      "magnet:?xt=urn:btih:df51304848ddd1a17b6f4f53129f766bab9677fb&dn=Bootstrap%20Island&tr=udp%3A%2F%2Fopentor.org%3A2710&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.demonii.com%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce"
+    ],
+    "uploadDate": "2026-09-03 00:00",
+    "fileSize": "16.99 GB",
+    "_torrentUrl": "https://byrutgame.org/index.php?do=download&id=191833",
+    "_storageUris": [
+      "https://gofile.io/d/xBThk0Uu"
+    ]
+  },
+  "https://byrutgame.org/21067-avencast-rise-of-the-mage.html": {
+    "title": "Avencast: Rise of the Mage",
+    "uris": [
+      "magnet:?xt=urn:btih:7a077295883190a8b026ef8ad1663dbfb1205e87&dn=Avencast%3A%20Rise%20of%20the%20Mage&tr=udp%3A%2F%2Fopentor.org%3A2710&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.demonii.com%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce"
+    ],
+    "uploadDate": "2026-09-03 00:00",
+    "fileSize": "1.34 GB",
+    "_torrentUrl": "https://byrutgame.org/index.php?do=download&id=44883",
+    "_storageUris": []
+  },
+  "https://byrutgame.org/23904-peripeteia.html": {
+    "title": "Peripeteia",
+    "uris": [
+      "https://pixeldrain.com/u/FzUk4GbU",
+      "https://www.mediafire.com/file/2wy1ctf91iguw9z/Peripeteia.Build.22841583.zip/file",
+      "https://gofile.io/d/y6qGY3",
+      "magnet:?xt=urn:btih:c1384a5433b6238042375850d7d4b46f3da444ba&dn=Peripeteia&tr=udp%3A%2F%2Fopentor.org%3A2710&tr=udp%3A%2F%2Ftracker.opentrackr.org%3A1337%2Fannounce&tr=udp%3A%2F%2Fopen.demonii.com%3A1337%2Fannounce&tr=udp%3A%2F%2Ftracker.torrent.eu.org%3A451%2Fannounce&tr=udp%3A%2F%2Fexodus.desync.com%3A6969%2Fannounce"
+    ],
+    "uploadDate": "2026-09-03 00:00",
+    "fileSize": "2.43 GB",
+    "_torrentUrl": "https://byrutgame.org/index.php?do=download&id=192474",
+    "_storageUris": [
+      "https://pixeldrain.com/u/FzUk4GbU",
+      "https://www.mediafire.com/file/2wy1ctf91iguw9z/Peripeteia.Build.22841583.zip/file",
+      "https://gofile.io/d/y6qGY3"
+    ]
   }
 }
