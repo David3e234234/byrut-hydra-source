@@ -2,8 +2,7 @@ name: Update byrut.json
 
 on:
   schedule:
-    - cron: "0 3 * * *"   # обновление новинок каждый день в 03:00 UTC
-    - cron: "0 5 * * *"   # дозаливка каталога (--all) каждый день в 05:00 UTC
+    - cron: "0 3 * * *"
   workflow_dispatch:
     inputs:
       mode:
@@ -24,49 +23,63 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  update:
+  news:
+    if: github.event_name == 'schedule' || inputs.mode == 'news'
     runs-on: ubuntu-latest
-    timeout-minutes: 350 # ~5ч50м: ниже лимита job в 6 часов
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - uses: actions/setup-node@v5
         with:
           node-version: 20
-
-      - name: Scrape (scheduled = news + all batch + check-updates; manual = выбор)
+      - name: Scrape news
         run: |
-          if [ "${{ github.event_name }}" = "schedule" ]; then
-            # 1) свежие раздачи — быстро (заодно проверяет обновления у
-            #    игр с этих страниц: отпечаток размер|дата|название)
-            node scrape.mjs --pages 5
-            bash publish.sh "chore: scrape news pages [skip ci]"
-            # 2) порция каталога: до 4000 НОВЫХ игр за запуск (~2.5ч),
-            #    кэшированные пропускаются мгновенно, лимит не тратится
-            node scrape.mjs --all --limit 4000
-            bash publish.sh "chore: scrape catalog batch [skip ci]"
-            # 3) проверка обновлений у кэшированных игр: если на сайте у игры
-            #    изменился размер/дата/версия — magnet перекачивается.
-            #    1500 игр за запуск ≈ полный круг по каталогу раз в ~5 недель
-            node scrape.mjs --check-updates --updates-limit 1500 --refresh
-            bash publish.sh "chore: check-updates sweep [skip ci]"
-          else
-            case "${{ inputs.mode }}" in
-              news)
-                node scrape.mjs --pages 5
-                bash publish.sh "chore: scrape news pages [skip ci]" ;;
-              all)
-                node scrape.mjs --all --limit 4000
-                bash publish.sh "chore: scrape catalog batch [skip ci]" ;;
-              check-updates)
-                node scrape.mjs --check-updates --updates-limit 4000 --refresh
-                bash publish.sh "chore: check-updates sweep [skip ci]" ;;
-            esac
-          fi
-        # publish.sh внутри делает финальный коммит+push после каждой фазы,
-        # поэтому шаг «Commit if changed» больше не нужен: данные сохраняются
-        # порциями и не теряются даже если job упадёт посередине.
+          node scrape.mjs --pages 5
+          bash publish.sh "chore: scrape news pages [skip ci]"
 
-      - name: Summary
-        if: always()
-        run: echo "Done. See commits on main."
+  catalog:
+    needs: news
+    if: >-
+      ${{
+        always() &&
+        (github.event_name == 'schedule' || inputs.mode == 'all') &&
+        (needs.news.result == 'success' || needs.news.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - name: Scrape catalog
+        run: |
+          node scrape.mjs --all --limit 2500
+          bash publish.sh "chore: scrape catalog batch [skip ci]"
+
+  check-updates:
+    needs: [news, catalog]
+    if: >-
+      ${{
+        always() &&
+        (github.event_name == 'schedule' || inputs.mode == 'check-updates') &&
+        (needs.news.result == 'success' || needs.news.result == 'skipped') &&
+        (needs.catalog.result == 'success' || needs.catalog.result == 'skipped')
+      }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 20
+      - name: Check updates
+        run: |
+          node scrape.mjs --check-updates --updates-limit 1500 --refresh
+          bash publish.sh "chore: check-updates sweep [skip ci]"
