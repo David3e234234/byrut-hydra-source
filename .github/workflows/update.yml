@@ -36,7 +36,7 @@ jobs:
           node-version: 20
       - name: Scrape news
         run: |
-          node scrape.mjs --pages 5
+          node scrape.mjs --pages 5 --time-limit 20
           bash publish.sh "chore: scrape news pages [skip ci]"
 
   catalog:
@@ -58,7 +58,7 @@ jobs:
           node-version: 20
       - name: Scrape catalog
         run: |
-          node scrape.mjs --all --limit 2500
+          node scrape.mjs --all --limit 2500 --time-limit 255
           bash publish.sh "chore: scrape catalog batch [skip ci]"
 
   check-updates:
@@ -81,5 +81,5 @@ jobs:
           node-version: 20
       - name: Check updates
         run: |
-          node scrape.mjs --check-updates --updates-limit 1500 --refresh
+          node scrape.mjs --check-updates --updates-limit 1500 --refresh --time-limit 150
           bash publish.sh "chore: check-updates sweep [skip ci]"

@@ -62,6 +62,20 @@ const UPDATE_LIMIT = updArgIdx !== -1 ? parseInt(args[updArgIdx + 1], 10) || 0 :
 const REFRESH = args.includes("--refresh");
 const pagesArgIdx = args.indexOf("--pages");
 const MAX_PAGES = pagesArgIdx !== -1 ? parseInt(args[pagesArgIdx + 1], 10) || 3 : 3;
+const timeLimitArgIdx = args.indexOf("--time-limit");
+const TIME_LIMIT_MIN = timeLimitArgIdx !== -1 ? parseInt(args[timeLimitArgIdx + 1], 10) || 0 : 0;
+const DEADLINE_MS = TIME_LIMIT_MIN * 60000;
+const STARTED_AT = Date.now();
+let deadlineReported = false;
+
+function timeExceeded() {
+  if (DEADLINE_MS <= 0 || Date.now() - STARTED_AT < DEADLINE_MS) return false;
+  if (!deadlineReported) {
+    console.log(`[time] лимит ${TIME_LIMIT_MIN} мин достигнут, сохраняем результаты и останавливаемся`);
+    deadlineReported = true;
+  }
+  return true;
+}
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -463,6 +477,7 @@ async function main() {
         console.log(`[--all] лимит ${ALL_LIMIT} новых игр за запуск достигнут, останавливаемся`);
         break;
       }
+      if (timeExceeded()) break;
       done++;
       if (done % 50 === 0) {
         console.log(`[--all] прогресс: ${done}/${gameUrls.length} (новых: ${newTorrents})`);
@@ -485,8 +500,9 @@ async function main() {
   }
 
   // ===== Обычный режим: страницы новостей =====
-  if (!ALL) {
+  if (!ALL && !CHECK_UPDATES) {
   for (let page = 1; page <= MAX_PAGES; page++) {
+    if (timeExceeded()) break;
     const pageUrl = page === 1 ? BASE + "/" : `${BASE}/page/${page}/`;
     console.log(`[page ${page}] ${pageUrl}`);
     let html;
@@ -503,6 +519,7 @@ async function main() {
     console.log(`  найдено игр: ${gameLinks.length}`);
 
     for (const link of gameLinks) {
+      if (timeExceeded()) break;
       if (!FULL && cache[link]?.uris?.length) {
         // Уже есть в кэше — берём без повторного скачивания
         entries.set(link, cache[link]);
@@ -530,6 +547,7 @@ async function main() {
     let checked = 0;
     let changed = 0;
     for (const link of slice) {
+      if (timeExceeded()) break;
       checked++;
       if (checked % 50 === 0) {
         console.log(`[check-updates] прогресс: ${checked}/${slice.length} (обновлено: ${updatedTorrents})`);
